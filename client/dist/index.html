@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="description"
+      content="JSON Maker"
+    />
+    <link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css">
+
+    <title>JSONSchema Serverless CRUD App</title>
+          
+    <!-- API for Google one-tap login, jwt-decode, and RJSF -->
+    <script src="https://apis.google.com/js/platform.js" async defer></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-jsonschema-form/1.8.1/react-jsonschema-form.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jwt-decode@2.2.0/build/jwt-decode.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
+    <script src="assets/server.js"></script>
+
+    <!-- Script that implements Google Sign Functionality -->
+    <script>
+      let userEmail = "";
+      let sessionJWTToken = "";
+      
+      // Show one-tap button (I think)
+      window.onload  = () =>{
+          google.accounts.id.initialize({
+              client_id: lambdaServer.clientID,
+              callback: handleCredentialResponse,
+              cancel_on_tap_outside: false
+          });
+          console.log('Google library loaded!');
+      }
+
+      // Handles successful login
+      function handleCredentialResponse(response) {
+        const idToken = response.credential;
+        const decoded = jwt_decode(idToken);
+        console.log(decoded);
+        sessionJWTToken = response;
+        userEmail = decoded.email;
+
+        if (decoded != null) {
+          console.log("entered");
+          document.getElementById('table-container').style.display = 'block';
+          displayForm();
+          renderTable();
+        }
+      }
+    </script>
+
+    <!-- TODO: This should be somewhere else. It keeps showing up above the google sign in button -->
+    <!-- div where the form is displayed -->
+    <div id="app"></div>
+    <div id="dataTable"></div>
+
+    <script>
+
+      // Function to display the form upon website load. Also have load the data already in the database.
+      function displayForm() {
+          let finalResult;
+          console.log("displaying");
+          const Form = JSONSchemaForm.default;
+          ReactDOM.render(
+              React.createElement(Form, {
+                  validate: validate,
+                  key: Date.now(),
+                  schema: lambdaServer.jschema,
+                  uiSchema: lambdaServer.uischema,
+                  onSubmit: e => setFormData(e.formData)
+              }),
+        document.getElementById("app")
+          );
+      }
+
+
+      // RENDER TABLE
+      function renderTable() {
+        const fields = lambdaServer.jschema.properties ? Object.keys(lambdaServer.jschema.properties) : [];
+
+        // CORS might be able to be fixed with AWS CLI command.
+        fetch(lambdaServer.server+"/getByEmail", {
+          method: "POST",
+          body: JSON.stringify({email: userEmail, jwtToken: sessionJWTToken}),
+          headers: {'Content-Type': 'application/json;charset=utf-8'}
+        })
+          .then(res => res.json())
+          .then((data) => {
+            if (!data) {
+              return;
+            }
+            let tableHtml = '<table class="styled-table">';
+            tableHtml += '<tr>';
+            for (const field of fields) {
+              tableHtml += `<th style="padding: 10px;">${field}</th>`;
+            }
+            tableHtml += '</tr>';
+            for (const row of data) {
+              tableHtml += '<tr>';
+              for (const field of fields) {
+                let cellValue = row[field];
+                // Check if the value is an object (assuming it's json formatted if object)
+                if (typeof cellValue === 'object') {
+                  // Pretty print the object using JSON.stringify with formatting options
+                  cellValue = JSON.stringify(cellValue, null, 2);
+                }
+                tableHtml += `<td style="padding: 10px;">${cellValue}</td>`;
+              }
+              tableHtml += '</tr>';
+            }
+            tableHtml += '</table>';
+            $('#dataTable').html(tableHtml);
+          })
+          .catch(err => {
+            console.log(err);
+            throw err;
+          }); 
+      }
+      
+      // Extra validation. This is extra validation done on top of RJSF's inherent validation.
+      // Currently, the extra validation done is for
+      // 1. File types
+      function validate(formData, schema) {
+        const errors = {};
+        
+        // DEBUG log:
+        console.log("Schema: ", schema);
+        console.log("Form data: ", formData);
+        console.log("Paths: ", lambdaServer.filepaths);
+
+        // TODO: Check for validity of file types
+        const filepaths = lambdaServer.filepaths;
+        if (filepaths.hasOwnProperty("paths")) {
+          const paths = filepaths["paths"];
+
+          // Loops through every path.
+          for (const path in paths) {
+            const pathArray = paths[path];
+            let fileType = ".";
+            if (pathArray.length < 1) {
+              console.log("Path array is empty. This should not happen");
+            }
+            else {
+              fileType = pathArray[pathArray.length-1];
+            }
+            console.log("Key: ", path, " FileType: ", pathArray[pathArray.length-1]);
+
+            // Find the file inside of formData
+            let file = formData;
+            let errorlog = errors;
+            for (let i = 0; i < pathArray.length - 1; i++) {
+              console.log("array loop. Accessing ", pathArray[i]);
+              file = file[pathArray[i]];
+              errorlog = errorlog[pathArray[i]];
+              if (!checkFileExtension(file, fileType)) {
+                console.log("Checking that ", pathArray[i], " is of type ", fileType);
+                //errorlog.addError("File type for " + pathArray[i] + " should be " + fileType);
+              }
+            }            
+            //console.log("The key of the file is" + pathArray[0] + " and the file is " + file);
+
+            // TOOD: Check that the file extension is correct.
+
+          }
+        }
+                
+        return errors;
+      }
+      
+      // Function to check file extension
+      function checkFileExtension(fileStr,extension){
+            if (extension == ".") return true;
+            for(const ext of extension){
+                if(fileStr.indexOf(ext)>=0){
+                  console.log("File extension is valid");
+                    return true;
+                }
+            }
+            console.log("File extension is not valid");
+            return false;
+      }
+
+      // Function to call API POST request upon validation success
+      async function setFormData(formData) {
+          formData.email = userEmail;
+          formData.jwtToken = sessionJWTToken;
+
+          try {
+            const response = await fetch(lambdaServer.server + "/setExperiment", {
+              method: "POST",
+              body: JSON.stringify(formData),
+              headers: { 'Content-Type': 'application/json;charset=utf-8' }
+            });
+
+            const responseData = await response.json();
+            console.log('Success:', responseData);
+          } 
+          catch (error) {
+            console.error('Error:', error);
+          }
+          renderTable();
+      }
+
+    </script>
+  </head>
+
+  <body>
+    <div id="g_id_onload" data-auto_prompt="true"
+
+            data-client_id=""
+            data-callback="handleCredentialResponse">
+        <div class="g_id_signin" data-type="standard" data-size="large" data-theme="filled_blue" data-text="continue_with" data-shape="rectangular" data-logo_alignment="center"></div>
+
+    <div id="root"></div>
+    <div id="table-container" class="styled-table" style="display: none;"></div>
+
+    <script type="module">
+      var gIdOnLoadDiv = document.getElementById('g_id_onload');
+      gIdOnLoadDiv.setAttribute('data-client_id', lambdaServer.clientID);
+    </script>
+  </body>
+</html>
+
